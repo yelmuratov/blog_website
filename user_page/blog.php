@@ -1,5 +1,102 @@
 <?php
-  session_start();
+session_start();
+
+// Database connection
+try {
+  $conn = new PDO('mysql:host=localhost;dbname=news', 'root', '');
+} catch (PDOException $e) {
+  echo "Error: " . $e->getMessage();
+  die();
+}
+
+// Handle like and dislike actions
+if (isset($_POST['action']) && isset($_POST['news_id'])) {
+  if (!isset($_SESSION['user'])) {
+    // Redirect to login page if not logged in
+    header('Location: ../login.php');
+    exit;
+  }
+
+  $news_id = (int)$_POST['news_id'];
+  $user_id = $_SESSION['user']['id'];
+  $action = $_POST['action'];
+  $value = ($action === 'like') ? 1 : -1;
+
+  // Check if the user has already liked or disliked this news
+  $sql = "SELECT * FROM likes WHERE news_id = :news_id AND user_id = :user_id";
+  $stmt = $conn->prepare($sql);
+  $stmt->bindParam(':news_id', $news_id, PDO::PARAM_INT);
+  $stmt->bindParam(':user_id', $user_id, PDO::PARAM_INT);
+  $stmt->execute();
+  $existingLike = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if ($existingLike) {
+    // Update the existing record
+    $sql = "UPDATE likes SET value = :value WHERE id = :id";
+    $stmt = $conn->prepare($sql);
+    $stmt->bindParam(':value', $value, PDO::PARAM_INT);
+    $stmt->bindParam(':id', $existingLike['id'], PDO::PARAM_INT);
+  } else {
+    // Insert a new record
+    $sql = "INSERT INTO likes (news_id, user_id, value) VALUES (:news_id, :user_id, :value)";
+    $stmt = $conn->prepare($sql);
+    $stmt->bindParam(':news_id', $news_id, PDO::PARAM_INT);
+    $stmt->bindParam(':user_id', $user_id, PDO::PARAM_INT);
+    $stmt->bindParam(':value', $value, PDO::PARAM_INT);
+  }
+
+  $stmt->execute();
+  header('Location: ' . $_SERVER['PHP_SELF']); // Redirect to avoid form resubmission
+  exit;
+}
+
+// Pagination setup
+$itemsPerPage = 4;
+$page = isset($_GET['page']) && is_numeric($_GET['page']) ? (int)$_GET['page'] : 1;
+$offset = ($page - 1) * $itemsPerPage;
+
+// Category filter
+$categoryFilter = isset($_GET['category_id']) ? $_GET['category_id'] : null;
+
+// Fetch categories
+$categories = [];
+$categorySql = "SELECT * FROM categories";
+$categoryStmt = $conn->prepare($categorySql);
+$categoryStmt->execute();
+$categories = $categoryStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch news with pagination and optional category filter
+$news = [];
+$sql = "SELECT n.*, 
+           SUM(CASE WHEN l.value = 1 THEN 1 ELSE 0 END) AS likes, 
+           SUM(CASE WHEN l.value = -1 THEN 1 ELSE 0 END) AS dislikes 
+        FROM news n 
+        LEFT JOIN likes l ON n.id = l.news_id";
+if ($categoryFilter) {
+  $sql .= " WHERE n.category_id = :category_id";
+}
+$sql .= " GROUP BY n.id LIMIT :offset, :itemsPerPage";
+$stmt = $conn->prepare($sql);
+if ($categoryFilter) {
+  $stmt->bindParam(':category_id', $categoryFilter, PDO::PARAM_INT);
+}
+$stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
+$stmt->bindParam(':itemsPerPage', $itemsPerPage, PDO::PARAM_INT);
+$stmt->execute();
+$news = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get total number of records for pagination calculation
+$countSql = "SELECT COUNT(*) FROM news";
+if ($categoryFilter) {
+  $countSql .= " WHERE category_id = :category_id";
+}
+$countStmt = $conn->prepare($countSql);
+if ($categoryFilter) {
+  $countStmt->bindParam(':category_id', $categoryFilter, PDO::PARAM_INT);
+}
+$countStmt->execute();
+$totalItems = $countStmt->fetchColumn();
+$totalPages = ceil($totalItems / $itemsPerPage);
 ?>
 
 <!DOCTYPE html>
@@ -19,7 +116,7 @@
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com" rel="preconnect">
   <link href="https://fonts.gstatic.com" rel="preconnect" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900;1,100;1,300;1,400;1,500;1,700;1,900&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Raleway:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800&family=Raleway:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
 
   <!-- Vendor CSS Files -->
   <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
@@ -31,6 +128,34 @@
 
   <!-- Main CSS File -->
   <link href="assets/css/main.css" rel="stylesheet">
+
+  <style>
+    /* Custom styles to make all cards the same height */
+    .card {
+      height: 100%;
+    }
+
+    .card-img-top {
+      object-fit: cover;
+      height: 200px;
+    }
+
+    .card-title {
+      min-height: 56px;
+      /* Adjust to match the typical height of a two-line title */
+    }
+
+    .card-text {
+      min-height: 100px;
+      /* Adjust to provide space for the content */
+    }
+
+    .card-body {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+  </style>
 </head>
 
 <body class="blog-page">
@@ -39,8 +164,6 @@
     <div class="container-fluid container-xl position-relative d-flex align-items-center justify-content-between">
 
       <a href="index.html" class="logo d-flex align-items-center">
-        <!-- Uncomment the line below if you also wish to use an image logo -->
-        <!-- <img src="assets/img/logo.png" alt=""> -->
         <h1 class="sitename">Selecao</h1>
       </a>
 
@@ -53,36 +176,23 @@
           <li><a href="../user_page/#team">Team</a></li>
           <li><a href="blog.php" class="active">Blog</a></li>
           <li><a href="../user_page/#contact">Contact</a></li>
-          <?php
-          if (isset($_SESSION['user'])) {
-          ?>
+          <?php if (isset($_SESSION['user'])) { ?>
             <div class="dropdown">
-              <a class="btn btn-secondary dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                Profile
-              </a>
-
+              <a class="btn btn-secondary dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Profile</a>
               <ul class="dropdown-menu">
-              <li><p class="dropdown-item" style="cursor: pointer;">
-                name:
-                <?php
-                  echo $_SESSION['user']['name'];
-                ?>
-                </p></li>
-                <li><p class="dropdown-item" style="cursor: pointer;">
-                email:
-                <?php
-                  echo $_SESSION['user']['email'];
-                ?>
-                </p></li>
+                <li>
+                  <p class="dropdown-item" style="cursor: pointer;">Name: <?php echo $_SESSION['user']['name']; ?></p>
+                </li>
+                <li>
+                  <p class="dropdown-item" style="cursor: pointer;">Email: <?php echo $_SESSION['user']['email']; ?></p>
+                </li>
                 <li><a class="dropdown-item" href="../logout.php">Logout</a></li>
               </ul>
             </div>
-          <?php
-          } else {
+          <?php } else {
             echo '<li><a href="../login.php">Login</a></li>';
             echo '<li><a href="../register.php">Register</a></li>';
-          }
-          ?>
+          } ?>
         </ul>
         <i class="mobile-nav-toggle d-xl-none bi bi-list"></i>
       </nav>
@@ -99,7 +209,7 @@
         <p>Esse dolorum voluptatum ullam est sint nemo et est ipsa porro placeat quibusdam quia assumenda numquam molestias.</p>
         <nav class="breadcrumbs">
           <ol>
-            <li><a href="index.html">Home</a></li>
+            <li><a href="index.php">Home</a></li>
             <li class="current">Blog</li>
           </ol>
         </nav>
@@ -108,189 +218,71 @@
 
     <!-- Blog Posts Section -->
     <section id="blog-posts" class="blog-posts section">
-
       <div class="container">
+        <!-- Category Filter Dropdown -->
+        <form method="GET" action="" class="mb-4">
+          <select name="category_id" class="form-select" onchange="this.form.submit()">
+            <option value="">All Categories</option>
+            <?php foreach ($categories as $category): ?>
+              <option value="<?= $category['id']; ?>" <?= isset($_GET['category_id']) && $_GET['category_id'] == $category['id'] ? 'selected' : ''; ?>>
+                <?= $category['name']; ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </form>
         <div class="row gy-4">
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-1.jpg" alt="" class="img-fluid">
+          <?php if (empty($news)): ?>
+            <p class="text-center">No news found for this category.</p>
+          <?php else: ?>
+            <?php foreach ($news as $item): ?>
+              <div class="col-lg-4">
+                <article class="card shadow-sm">
+                  <img src="../images/<?= htmlspecialchars($item['image']); ?>" alt="News Image" class="card-img-top img-fluid">
+                  <div class="card-body">
+                    <h5 class="card-title">
+                      <a href="blog-details.php?id=<?= htmlspecialchars($item['id']); ?>">
+                        <?= htmlspecialchars($item['title']); ?>
+                      </a>
+                    </h5>
+                    <p class="card-text"><?= substr(htmlspecialchars($item['text']), 0, 100); ?>...</p>
+                    <a href="blog-details.php?id=<?= htmlspecialchars($item['id']); ?>" class="btn btn-primary">Read More</a>
+                  </div>
+                </article>
               </div>
 
-              <p class="post-category">Politics</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Dolorum optio tempore voluptas dignissimos</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Maria Doe</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Jan 1, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-2.jpg" alt="" class="img-fluid">
-              </div>
-
-              <p class="post-category">Sports</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Nisi magni odit consequatur autem nulla dolorem</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author-2.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Allisa Mayer</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Jun 5, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-3.jpg" alt="" class="img-fluid">
-              </div>
-
-              <p class="post-category">Entertainment</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Possimus soluta ut id suscipit ea ut in quo quia et soluta</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author-3.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Mark Dower</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Jun 22, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-4.jpg" alt="" class="img-fluid">
-              </div>
-
-              <p class="post-category">Sports</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Non rem rerum nam cum quo minus olor distincti</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author-4.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Lisa Neymar</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Jun 30, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-5.jpg" alt="" class="img-fluid">
-              </div>
-
-              <p class="post-category">Politics</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Accusamus quaerat aliquam qui debitis facilis consequatur</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author-5.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Denis Peterson</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Jan 30, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
-          <div class="col-lg-4">
-            <article>
-
-              <div class="post-img">
-                <img src="assets/img/blog/blog-6.jpg" alt="" class="img-fluid">
-              </div>
-
-              <p class="post-category">Entertainment</p>
-
-              <h2 class="title">
-                <a href="blog-details.html">Distinctio provident quibusdam numquam aperiam aut</a>
-              </h2>
-
-              <div class="d-flex align-items-center">
-                <img src="assets/img/blog/blog-author-6.jpg" alt="" class="img-fluid post-author-img flex-shrink-0">
-                <div class="post-meta">
-                  <p class="post-author">Mika Lendon</p>
-                  <p class="post-date">
-                    <time datetime="2022-01-01">Feb 14, 2022</time>
-                  </p>
-                </div>
-              </div>
-
-            </article>
-          </div><!-- End post list item -->
-
+            <?php endforeach; ?>
+          <?php endif; ?>
         </div>
       </div>
-
     </section><!-- /Blog Posts Section -->
 
     <!-- Blog Pagination Section -->
     <section id="blog-pagination" class="blog-pagination section">
-
       <div class="container">
-        <div class="d-flex justify-content-center">
-          <ul>
-            <li><a href="#"><i class="bi bi-chevron-left"></i></a></li>
-            <li><a href="#">1</a></li>
-            <li><a href="#" class="active">2</a></li>
-            <li><a href="#">3</a></li>
-            <li><a href="#">4</a></li>
-            <li>...</li>
-            <li><a href="#">10</a></li>
-            <li><a href="#"><i class="bi bi-chevron-right"></i></a></li>
-          </ul>
-        </div>
+        <?php if ($totalPages > 1): ?>
+          <nav aria-label="Page navigation example">
+            <ul class="pagination justify-content-center">
+              <li class="page-item <?php if ($page <= 1) echo 'disabled'; ?>">
+                <a class="page-link" href="?page=<?php echo $page - 1; ?><?php echo $categoryFilter ? '&category_id=' . $categoryFilter : ''; ?>" aria-label="Previous">
+                  <span aria-hidden="true">&laquo;</span>
+                  <span class="sr-only">Previous</span>
+                </a>
+              </li>
+              <?php for ($i = 1; $i <= $totalPages; $i++): ?>
+                <li class="page-item <?php if ($i == $page) echo 'active'; ?>">
+                  <a class="page-link" href="?page=<?php echo $i; ?><?php echo $categoryFilter ? '&category_id=' . $categoryFilter : ''; ?>"><?php echo $i; ?></a>
+                </li>
+              <?php endfor; ?>
+              <li class="page-item <?php if ($page >= $totalPages) echo 'disabled'; ?>">
+                <a class="page-link" href="?page=<?php echo $page + 1; ?><?php echo $categoryFilter ? '&category_id=' . $categoryFilter : ''; ?>" aria-label="Next">
+                  <span aria-hidden="true">&raquo;</span>
+                  <span class="sr-only">Next</span>
+                </a>
+              </li>
+            </ul>
+          </nav>
+        <?php endif; ?>
       </div>
-
     </section><!-- /Blog Pagination Section -->
 
   </main>
@@ -300,7 +292,7 @@
       <h3 class="sitename">Selecao</h3>
       <p>Et aut eum quis fuga eos sunt ipsa nihil. Labore corporis magni eligendi fuga maxime saepe commodi placeat.</p>
       <div class="social-links d-flex justify-content-center">
-        <a href=""><i class="bi bi-twitter-x"></i></a>
+        <a href=""><i class="bi bi-twitter"></i></a>
         <a href=""><i class="bi bi-facebook"></i></a>
         <a href=""><i class="bi bi-instagram"></i></a>
         <a href=""><i class="bi bi-skype"></i></a>

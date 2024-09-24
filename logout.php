@@ -1,11 +1,11 @@
 <?php
-    session_start(); // Start the session
+    session_start(); 
     if(isset($_SESSION['user'])){
-        unset($_SESSION['user']); // Unset the session variable
-        header('Location: user_page/index.php'); // Redirect to the login page
+        unset($_SESSION['user']); 
+        header('Location: user_page/index.php'); 
     }else if(isset($_SESSION['admin'])){
-        unset($_SESSION['admin']); // Unset the session variable
-        header('Location: login.php'); // Redirect to the login page
+        unset($_SESSION['admin']); 
+        header('Location: login.php'); 
     }
-    exit(); // Ensure no further code is executed
+    exit(); 
 ?>
